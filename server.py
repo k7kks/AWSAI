@@ -2374,6 +2374,13 @@ def create_app() -> Flask:
         set_session_cookie(response, "user", None)
         return response
 
+    @app.get("/api/auth/session")
+    def user_session_state():
+        row = get_subject_from_session("user", "portal_users")
+        if not row or not bool(row["enabled"]):
+            return jsonify({"authenticated": False})
+        return jsonify({"authenticated": True, "user": serialize_portal_user(row)})
+
     @app.get("/api/auth/me")
     def user_me():
         row = require_user()
@@ -2434,6 +2441,13 @@ def create_app() -> Flask:
         response = make_response(jsonify({"ok": True}))
         set_session_cookie(response, "admin", None)
         return response
+
+    @app.get("/api/admin/session")
+    def admin_session_state():
+        row = get_subject_from_session("admin", "portal_admins")
+        if not row or not bool(row["enabled"]):
+            return jsonify({"authenticated": False})
+        return jsonify({"authenticated": True, "admin": {"email": row["email"], "displayName": row["display_name"], "createdAt": row["created_at"]}})
 
     @app.get("/api/admin/me")
     def admin_me():

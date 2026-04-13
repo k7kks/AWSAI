@@ -732,8 +732,14 @@ async function loadConfig() {
 
 async function loadUserSession() {
   try {
-    state.dashboard = await api("/api/dashboard");
-    state.user = state.dashboard.user;
+    const session = await api("/api/auth/session");
+    if (session.authenticated) {
+      state.dashboard = await api("/api/dashboard");
+      state.user = state.dashboard.user;
+    } else {
+      state.dashboard = null;
+      state.user = null;
+    }
   } catch (error) {
     state.dashboard = null;
     state.user = null;
@@ -799,12 +805,24 @@ async function refreshAdminData() {
 
 async function loadAdminSession() {
   try {
-    const payload = await api("/api/admin/me");
-    state.admin = payload.admin;
-    $("adminSessionText").textContent = payload.admin.displayName;
-    await refreshAdminData();
+    const payload = await api("/api/admin/session");
+    if (payload.authenticated) {
+      state.admin = payload.admin;
+      $("adminSessionText").textContent = payload.admin.displayName;
+      await refreshAdminData();
+    } else {
+      state.admin = null;
+      state.overview = null;
+      state.adminUsers = [];
+      state.accounts = [];
+      state.providerDiagnostics = {};
+      state.snapshots = [];
+    }
   } catch (error) {
     state.admin = null;
+    state.overview = null;
+    state.adminUsers = [];
+    state.accounts = [];
     state.providerDiagnostics = {};
     state.snapshots = [];
   }
