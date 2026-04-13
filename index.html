@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kiro Relay</title>
+  <meta name="description" content="Kiro Relay">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+    rel="stylesheet"
+  >
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="flash-message is-hidden" id="flashMessage"></div>
+
+  <main class="app-layout">
+    <section class="screen" id="publicScreen">
+      <section class="panel entry-panel">
+        <div class="panel-header compact">
+          <div>
+            <p class="eyebrow">Entries</p>
+            <h3>用户入口</h3>
+            <p class="muted">保留 Kiro 原生入口，同时支持跳转到已接入的 Sub2API 门户。</p>
+          </div>
+        </div>
+        <div class="entry-grid" id="publicEntryGrid"></div>
+      </section>
+
+      <div class="auth-card" id="publicAuthCard">
+        <a class="brand" href="/">
+          <span class="brand-mark">KR</span>
+          <span class="brand-copy">
+            <strong>Kiro Relay</strong>
+            <span id="publicApiBaseUrl">Portal</span>
+          </span>
+        </a>
+
+        <h1 class="screen-title">登录</h1>
+
+        <div class="tab-switcher">
+          <button class="tab-button is-active" type="button" data-user-tab="login">登录</button>
+          <button class="tab-button" type="button" data-user-tab="signup">注册</button>
+        </div>
+
+        <form class="auth-form is-active" id="loginForm">
+          <label>
+            <span>邮箱</span>
+            <input type="email" name="email" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input type="password" name="password" required>
+          </label>
+          <button class="button button-primary" type="submit">登录</button>
+        </form>
+
+        <form class="auth-form" id="signupForm">
+          <label>
+            <span>工作区</span>
+            <input type="text" name="workspace" required>
+          </label>
+          <label>
+            <span>入口类型</span>
+            <select name="provider" id="signupProviderSelect">
+              <option value="kiro">Kiro 套餐</option>
+              <option value="sub2api">Sub2API 套餐</option>
+            </select>
+          </label>
+          <label>
+            <span>邮箱</span>
+            <input type="email" name="email" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input type="password" name="password" minlength="8" required>
+          </label>
+          <label>
+            <span>套餐</span>
+            <select name="plan" id="signupPlanSelect">
+              <option value="starter">Starter</option>
+              <option value="growth">Growth</option>
+              <option value="partner">Partner</option>
+            </select>
+          </label>
+          <label class="full-width">
+            <span>用途</span>
+            <input type="text" name="usecase">
+          </label>
+          <button class="button button-primary full-width" type="submit">注册</button>
+        </form>
+
+        <p class="form-message" id="userAuthMessage"></p>
+      </div>
+
+      <section class="dashboard-shell is-hidden" id="workspaceShell">
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h2 id="workspaceTitle">-</h2>
+              <p class="muted" id="workspaceEmail">-</p>
+              <p class="muted" id="workspaceProvider">-</p>
+            </div>
+            <div class="stack-actions">
+              <button class="button button-secondary is-hidden" type="button" id="openProviderEntryButton">打开入口</button>
+              <button class="button button-secondary" type="button" id="rotateOwnKeyButton">轮换 Key</button>
+              <button class="button button-ghost" type="button" id="userLogoutButton">退出</button>
+            </div>
+          </div>
+
+          <div class="credential-grid">
+            <article class="credential-card">
+              <span class="label">API Key</span>
+              <code id="workspaceApiKey">-</code>
+              <button class="text-button" type="button" id="copyOwnKeyButton">复制</button>
+            </article>
+
+            <article class="credential-card">
+              <span class="label">Base URL</span>
+              <code id="workspaceBaseUrl">-</code>
+              <button class="text-button" type="button" id="copyBaseUrlButton">复制</button>
+            </article>
+
+            <article class="credential-card">
+              <span class="label">Python</span>
+              <pre id="sdkSnippet"></pre>
+              <button class="text-button" type="button" id="copySnippetButton">复制</button>
+            </article>
+          </div>
+        </article>
+
+        <section class="stats-grid">
+          <article class="stat-card">
+            <span>30 天请求</span>
+            <strong id="metricRequests30d">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>30 天 Tokens</span>
+            <strong id="metricTokens30d">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>今日请求</span>
+            <strong id="metricTodayRequests">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>剩余额度</span>
+            <strong id="metricQuotaRemaining">0</strong>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel">
+            <div class="panel-header compact">
+              <div>
+                <p class="eyebrow">Usage</p>
+                <h3>近 7 天</h3>
+              </div>
+              <span class="value-inline" id="metricMonthlyCost">$0.0000</span>
+            </div>
+            <div class="usage-chart" id="usageChart"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header compact">
+              <div>
+                <p class="eyebrow">Quota</p>
+                <h3>当前配额</h3>
+              </div>
+            </div>
+            <div class="quota-list" id="quotaList"></div>
+          </article>
+        </section>
+      </section>
+    </section>
+
+    <section class="screen is-hidden" id="adminScreen">
+      <section class="panel entry-panel">
+        <div class="panel-header compact">
+          <div>
+            <p class="eyebrow">Entries</p>
+            <h3>管理入口</h3>
+            <p class="muted">Kiro 管理继续内置，Sub2API 管理入口通过配置跳转。</p>
+          </div>
+        </div>
+        <div class="entry-grid" id="adminEntryGrid"></div>
+      </section>
+
+      <div class="auth-card" id="adminLoginShell">
+        <a class="brand" href="/admin">
+          <span class="brand-mark">KR</span>
+          <span class="brand-copy">
+            <strong>Kiro Relay</strong>
+            <span>Admin</span>
+          </span>
+        </a>
+
+        <h1 class="screen-title">管理员登录</h1>
+
+        <form class="auth-form is-active" id="adminLoginForm">
+          <label>
+            <span>邮箱</span>
+            <input type="email" name="email" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input type="password" name="password" required>
+          </label>
+          <button class="button button-primary" type="submit">登录</button>
+        </form>
+
+        <p class="form-message" id="adminAuthMessage"></p>
+      </div>
+
+      <section class="dashboard-shell is-hidden" id="adminShell">
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Admin</p>
+              <h2>管理后台</h2>
+              <p class="muted" id="adminSessionText">-</p>
+            </div>
+            <button class="button button-ghost" type="button" id="adminLogoutButton">退出</button>
+          </div>
+        </article>
+
+        <section class="stats-grid">
+          <article class="stat-card">
+            <span>用户数</span>
+            <strong id="adminUserCount">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>启用用户</span>
+            <strong id="adminEnabledUserCount">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>账号池</span>
+            <strong id="adminAccountCount">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>选择策略</span>
+            <strong id="adminSelectionMode">-</strong>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Entries</p>
+              <h3>入口管理</h3>
+              <p class="muted">在这里维护 Sub2API 的用户入口、管理入口、API Base URL 和健康检查地址。</p>
+            </div>
+            <button class="button button-secondary" type="button" id="refreshProvidersButton">刷新</button>
+          </div>
+          <div class="provider-admin-grid" id="providerAdminGrid"></div>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel">
+            <div class="panel-header compact">
+              <div>
+                <p class="eyebrow">Users</p>
+                <h3 id="editingHint">新建用户</h3>
+              </div>
+            </div>
+
+            <form class="form-grid" id="adminUserForm">
+              <label>
+                <span>工作区</span>
+                <input type="text" name="workspace" required>
+              </label>
+              <label>
+                <span>邮箱</span>
+                <input type="email" name="email" required>
+              </label>
+              <label>
+                <span>入口类型</span>
+                <select name="provider" id="adminProviderSelect">
+                  <option value="kiro">Kiro 套餐</option>
+                  <option value="sub2api">Sub2API 套餐</option>
+                </select>
+              </label>
+              <label>
+                <span>密码</span>
+                <input type="password" name="password" placeholder="编辑时可留空">
+              </label>
+              <label>
+                <span>套餐</span>
+                <select name="plan" id="adminPlanSelect">
+                  <option value="starter">Starter</option>
+                  <option value="growth">Growth</option>
+                  <option value="partner">Partner</option>
+                </select>
+              </label>
+              <label>
+                <span>日额度</span>
+                <input type="number" name="dailyQuota" min="0" required>
+              </label>
+              <label>
+                <span>月额度</span>
+                <input type="number" name="monthlyQuota" min="0" required>
+              </label>
+              <label>
+                <span>月请求数</span>
+                <input type="number" name="requestQuota" min="0" required>
+              </label>
+              <label>
+                <span>RPM</span>
+                <input type="number" name="rateLimitRpm" min="0" required>
+              </label>
+              <label class="full-width">
+                <span>用途</span>
+                <input type="text" name="usecase">
+              </label>
+              <label class="full-width">
+                <span>备注</span>
+                <input type="text" name="notes">
+              </label>
+              <label class="checkbox-field full-width">
+                <input type="checkbox" name="enabled" checked>
+                <span>启用用户</span>
+              </label>
+              <div class="stack-actions full-width">
+                <button class="button button-primary" type="submit" id="adminUserSubmit">保存</button>
+                <button class="button button-secondary is-hidden" type="button" id="cancelEditButton">取消</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header compact">
+              <div>
+                <p class="eyebrow">Pool</p>
+                <h3>设备授权</h3>
+              </div>
+            </div>
+
+            <form class="form-grid" id="oauthForm">
+              <label>
+                <span>标签</span>
+                <input type="text" name="label" placeholder="kiro-main" required>
+              </label>
+              <label class="checkbox-field">
+                <input type="checkbox" name="enabled" checked>
+                <span>授权后启用</span>
+              </label>
+              <div class="stack-actions full-width">
+                <button class="button button-primary" type="submit">开始授权</button>
+                <button class="button button-secondary" type="button" id="pollOauthButton">刷新</button>
+                <button class="button button-secondary" type="button" id="claimOauthButton">认领</button>
+              </div>
+            </form>
+
+            <div class="info-list">
+              <article>
+                <span>状态</span>
+                <strong id="oauthStatusText">-</strong>
+              </article>
+              <article>
+                <span>设备码</span>
+                <strong id="oauthUserCode">-</strong>
+              </article>
+              <article>
+                <span>链接</span>
+                <a href="#" id="oauthLink" target="_blank" rel="noreferrer">-</a>
+              </article>
+            </div>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel">
+            <div class="panel-header compact">
+              <div>
+                <p class="eyebrow">Users</p>
+                <h3>用户列表</h3>
+              </div>
+              <button class="button button-secondary" type="button" id="refreshUsersButton">刷新</button>
+            </div>
+
+            <div class="table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>工作区</th>
+                    <th>邮箱</th>
+                    <th>入口</th>
+                    <th>套餐</th>
+                    <th>Key</th>
+                    <th>请求数</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="adminUsersBody"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header compact">
+              <div>
+                <p class="eyebrow">Accounts</p>
+                <h3>账号池</h3>
+              </div>
+              <div class="stack-actions">
+                <button class="button button-secondary" type="button" id="refreshAccountsButton">刷新</button>
+                <button class="button button-secondary" type="button" id="refreshAllAccountsButton">刷新 Token</button>
+                <button class="button button-secondary" type="button" id="refreshAllQuotasButton">刷新配额</button>
+              </div>
+            </div>
+
+            <div class="table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>账号</th>
+                    <th>状态</th>
+                    <th>启用</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="accountPoolBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Recovery</p>
+              <h3>快照备份</h3>
+              <p class="muted">后台支持创建和下载快照，恢复建议在停服状态下执行命令。</p>
+            </div>
+            <form class="stack-actions" id="snapshotForm">
+              <input type="text" id="snapshotLabelInput" name="label" placeholder="before-upgrade">
+              <button class="button button-primary" type="submit" id="createSnapshotButton">创建快照</button>
+            </form>
+          </div>
+
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>快照</th>
+                  <th>时间</th>
+                  <th>大小</th>
+                  <th>文件数</th>
+                  <th>来源</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="snapshotBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

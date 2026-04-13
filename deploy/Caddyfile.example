@@ -1,0 +1,16 @@
+relay.example.com {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:4173
+}
+
+admin.example.com {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:4173
+}
+
+api.example.com {
+  encode zstd gzip
+  @relayApi path /v1* /healthz
+  reverse_proxy @relayApi 127.0.0.1:4173
+  respond "not found" 404
+}

@@ -1,0 +1,11 @@
+tunnel: your-named-tunnel-id
+credentials-file: C:\cloudflared\your-named-tunnel.json
+
+ingress:
+  - hostname: relay.example.com
+    service: http://127.0.0.1:4173
+  - hostname: admin.example.com
+    service: http://127.0.0.1:4173
+  - hostname: api.example.com
+    service: http://127.0.0.1:4173
+  - service: http_status:404

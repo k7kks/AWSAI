@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Runtime data, logs, and secrets
+run/
+snapshots/
+dist/
+*.log
+*.db
+*.sqlite3
+account_pool.json
+registration_results.json
+gcm-diagnose.log
+
+# Downloaded or vendored artifacts
+sub2api-main/
+sub2api-main.zip
+upstream/claude-server/
+upstream/*.zip
+upstream/data/cache/
+upstream/data/logs/
+upstream/data/*.sqlite3
+upstream/data/*.log

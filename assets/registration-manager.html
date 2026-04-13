@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>注册机管理 - Kiro Relay</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+    rel="stylesheet"
+  >
+  <link rel="stylesheet" href="/assets/styles.css">
+  <style>
+    .registration-manager {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    .manager-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+    }
+
+    .manager-tabs {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .tab-button {
+      padding: 0.5rem 1rem;
+      border: 1px solid #e1e5e9;
+      background: white;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .tab-button.active {
+      background: #3b82f6;
+      color: white;
+      border-color: #3b82f6;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .accounts-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 2rem;
+    }
+
+    .accounts-table th,
+    .accounts-table td {
+      padding: 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid #e1e5e9;
+    }
+
+    .accounts-table th {
+      background: #f8fafc;
+      font-weight: 600;
+    }
+
+    .status-badge {
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .status-pending { background: #fef3c7; color: #92400e; }
+    .status-active { background: #d1fae5; color: #065f46; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+    .status-completed { background: #d1fae5; color: #065f46; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .form-group label {
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+    }
+
+    .form-group input,
+    .form-group textarea {
+      padding: 0.5rem;
+      border: 1px solid #d1d5db;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .logs-container {
+      background: #f8fafc;
+      border: 1px solid #e1e5e9;
+      border-radius: 0.375rem;
+      padding: 1rem;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .log-entry {
+      padding: 0.5rem;
+      border-bottom: 1px solid #e1e5e9;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+    }
+
+    .log-info { color: #374151; }
+    .log-warning { color: #d97706; }
+    .log-error { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="flash-message is-hidden" id="flashMessage"></div>
+
+  <main class="app-layout">
+    <section class="screen">
+      <div class="registration-manager">
+        <div class="manager-header">
+          <h1>注册机管理</h1>
+          <button class="button button-secondary" onclick="logout()">退出登录</button>
+        </div>
+
+        <div class="manager-tabs">
+          <button class="tab-button active" onclick="switchTab('accounts')">账户管理</button>
+          <button class="tab-button" onclick="switchTab('jobs')">任务管理</button>
+          <button class="tab-button" onclick="switchTab('logs')">日志查看</button>
+        </div>
+
+        <!-- 账户管理 -->
+        <div id="accountsTab" class="tab-content active">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h2>注册账户</h2>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="button button-secondary" onclick="autoCreateAccount()">
+                <span id="autoCreateSpinner" style="display: none;">⟳</span>
+                自动创建账户
+              </button>
+              <button class="button button-primary" onclick="showAddAccountModal()">添加账户</button>
+            </div>
+          </div>
+
+          <table class="accounts-table" id="accountsTable">
+            <thead>
+              <tr>
+                <th>邮箱</th>
+                <th>状态</th>
+                <th>AWS Builder ID</th>
+                <th>尝试次数</th>
+                <th>创建时间</th>
+                <th>最后尝试</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountsTableBody">
+              <!-- 动态填充 -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 任务管理 -->
+        <div id="jobsTab" class="tab-content">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h2>注册任务</h2>
+            <button class="button button-primary" onclick="createJob()">创建任务</button>
+          </div>
+
+          <table class="accounts-table" id="jobsTable">
+            <thead>
+              <tr>
+                <th>任务名称</th>
+                <th>状态</th>
+                <th>总账户数</th>
+                <th>已完成</th>
+                <th>失败</th>
+                <th>并发数</th>
+                <th>创建时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="jobsTableBody">
+              <!-- 动态填充 -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 日志查看 -->
+        <div id="logsTab" class="tab-content">
+          <h2>注册日志</h2>
+          <div class="logs-container" id="logsContainer">
+            <!-- 日志条目 -->
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 添加账户模态框 -->
+  <div id="addAccountModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>添加注册账户</h3>
+      <form id="addAccountForm">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="accountEmail">邮箱地址</label>
+            <input type="email" id="accountEmail" name="email" required>
+          </div>
+          <div class="form-group">
+            <label for="accountPassword">密码</label>
+            <input type="password" id="accountPassword" name="password" required>
+          </div>
+          <div class="form-group">
+            <label for="refreshToken">Microsoft 刷新令牌</label>
+            <textarea id="refreshToken" name="microsoft_refresh_token" required></textarea>
+          </div>
+          <div class="form-group">
+            <label for="clientId">Microsoft 客户端 ID</label>
+            <input type="text" id="clientId" name="microsoft_client_id" required>
+          </div>
+        </div>
+        <div class="button-group">
+          <button type="button" class="button button-secondary" onclick="hideAddAccountModal()">取消</button>
+          <button type="submit" class="button button-primary">添加账户</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let currentTab = 'accounts';
+
+    // 页面加载完成后初始化
+    document.addEventListener('DOMContentLoaded', function() {
+      checkAuth();
+      loadAccounts();
+      loadJobs();
+      loadLogs();
+    });
+
+    // 检查管理员认证
+    async function checkAuth() {
+      try {
+        const response = await fetch('/api/admin/me');
+        if (!response.ok) {
+          window.location.href = '/admin';
+          return;
+        }
+        const data = await response.json();
+        // 显示管理员信息
+      } catch (error) {
+        window.location.href = '/admin';
+      }
+    }
+
+    // 切换标签页
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+      document.querySelector(`[onclick="switchTab('${tabName}')"]`).classList.add('active');
+      document.getElementById(tabName + 'Tab').classList.add('active');
+
+      currentTab = tabName;
+    }
+
+    // 加载账户列表
+    async function loadAccounts() {
+      try {
+        const response = await fetch('/api/admin/registration/accounts');
+        const data = await response.json();
+
+        const tbody = document.getElementById('accountsTableBody');
+        tbody.innerHTML = '';
+
+        data.accounts.forEach(account => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${account.email}</td>
+            <td><span class="status-badge status-${account.status}">${account.status}</span></td>
+            <td>${account.aws_builder_id || '-'}</td>
+            <td>${account.registration_attempts}</td>
+            <td>${new Date(account.created_at).toLocaleString()}</td>
+            <td>${account.last_registration_attempt ? new Date(account.last_registration_attempt).toLocaleString() : '-'}</td>
+            <td>
+              <button class="button button-small" onclick="deleteAccount(${account.id})">删除</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+      } catch (error) {
+        showMessage('加载账户列表失败: ' + error.message, 'error');
+      }
+    }
+
+    // 加载任务列表
+    async function loadJobs() {
+      try {
+        const response = await fetch('/api/admin/registration/jobs');
+        const data = await response.json();
+
+        const tbody = document.getElementById('jobsTableBody');
+        tbody.innerHTML = '';
+
+        data.jobs.forEach(job => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${job.job_name}</td>
+            <td><span class="status-badge status-${job.status}">${job.status}</span></td>
+            <td>${job.total_accounts}</td>
+            <td>${job.completed_accounts}</td>
+            <td>${job.failed_accounts}</td>
+            <td>${job.concurrency}</td>
+            <td>${new Date(job.created_at).toLocaleString()}</td>
+            <td>
+              <button class="button button-small" onclick="viewJobLogs(${job.id})">查看日志</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+      } catch (error) {
+        showMessage('加载任务列表失败: ' + error.message, 'error');
+      }
+    }
+
+    // 加载日志
+    async function loadLogs() {
+      try {
+        const response = await fetch('/api/admin/registration/logs?limit=50');
+        const data = await response.json();
+
+        const container = document.getElementById('logsContainer');
+        container.innerHTML = '';
+
+        data.logs.forEach(log => {
+          const logEntry = document.createElement('div');
+          logEntry.className = `log-entry log-${log.level.toLowerCase()}`;
+          logEntry.innerHTML = `
+            <strong>${log.level}</strong> [${new Date(log.created_at).toLocaleString()}]
+            ${log.step ? `[${log.step}] ` : ''}${log.message}
+          `;
+          container.appendChild(logEntry);
+        });
+      } catch (error) {
+        showMessage('加载日志失败: ' + error.message, 'error');
+      }
+    }
+
+    // 显示添加账户模态框
+    function showAddAccountModal() {
+      document.getElementById('addAccountModal').style.display = 'block';
+    }
+
+    // 隐藏添加账户模态框
+    function hideAddAccountModal() {
+      document.getElementById('addAccountModal').style.display = 'none';
+      document.getElementById('addAccountForm').reset();
+    }
+
+    // 添加账户
+    document.getElementById('addAccountForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+
+      const formData = new FormData(e.target);
+      const accountData = {
+        email: formData.get('email'),
+        password: formData.get('password'),
+        microsoft_refresh_token: formData.get('microsoft_refresh_token'),
+        microsoft_client_id: formData.get('microsoft_client_id')
+      };
+
+      try {
+        const response = await fetch('/api/admin/registration/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(accountData)
+        });
+
+        if (response.ok) {
+          showMessage('账户添加成功', 'success');
+          hideAddAccountModal();
+          loadAccounts();
+        } else {
+          const error = await response.json();
+          showMessage('添加账户失败: ' + error.error, 'error');
+        }
+      } catch (error) {
+        showMessage('添加账户失败: ' + error.message, 'error');
+      }
+    });
+
+    // 自动创建账户
+    async function autoCreateAccount() {
+      const spinner = document.getElementById('autoCreateSpinner');
+      const button = event.target;
+      const originalText = button.textContent;
+
+      // Show loading state
+      spinner.style.display = 'inline';
+      button.disabled = true;
+      button.textContent = '创建中...';
+
+      try {
+        const response = await fetch('/api/admin/registration/auto-create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+          showMessage(`自动创建成功！邮箱: ${result.email}`, 'success');
+
+          // Show OAuth instructions in a modal or alert
+          const instructions = result.oauth_instructions;
+          const message = `
+账户已创建，但需要手动完成OAuth2设置：
+
+1. 访问Azure门户创建应用: ${instructions.step1}
+2. 设置重定向URI: ${instructions.step2}
+3. 添加权限: ${instructions.step3}
+4. 获取应用ID: ${instructions.step4}
+5. 执行OAuth2流程: ${instructions.step5}
+6. 更新账户: ${instructions.step6}
+
+创建的账户ID: ${result.account_id}
+          `;
+          alert(message);
+          loadAccounts();
+        } else {
+          showMessage('自动创建失败: ' + (result.error || '未知错误'), 'error');
+        }
+      } catch (error) {
+        showMessage('自动创建失败: ' + error.message, 'error');
+      } finally {
+        // Restore button state
+        spinner.style.display = 'none';
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }
+
+    // 删除账户
+    async function deleteAccount(accountId) {
+      if (!confirm('确定要删除这个账户吗？')) return;
+
+      try {
+        const response = await fetch(`/api/admin/registration/accounts/${accountId}`, {
+          method: 'DELETE'
+        });
+
+        if (response.ok) {
+          showMessage('账户删除成功', 'success');
+          loadAccounts();
+        } else {
+          const error = await response.json();
+          showMessage('删除账户失败: ' + error.error, 'error');
+        }
+      } catch (error) {
+        showMessage('删除账户失败: ' + error.message, 'error');
+      }
+    }
+
+    // 创建任务
+    async function createJob() {
+      const jobName = prompt('请输入任务名称（可选）');
+      const concurrency = parseInt(prompt('请输入并发数 (1-10)', '1')) || 1;
+
+      try {
+        const response = await fetch('/api/admin/registration/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_name: jobName,
+            concurrency: Math.min(Math.max(concurrency, 1), 10)
+          })
+        });
+
+        if (response.ok) {
+          showMessage('任务创建成功', 'success');
+          loadJobs();
+        } else {
+          const error = await response.json();
+          showMessage('创建任务失败: ' + error.error, 'error');
+        }
+      } catch (error) {
+        showMessage('创建任务失败: ' + error.message, 'error');
+      }
+    }
+
+    // 退出登录
+    async function logout() {
+      try {
+        await fetch('/api/admin/logout', { method: 'POST' });
+        window.location.href = '/admin';
+      } catch (error) {
+        window.location.href = '/admin';
+      }
+    }
+
+    // 显示消息
+    function showMessage(message, type = 'info') {
+      const flashMessage = document.getElementById('flashMessage');
+      flashMessage.textContent = message;
+      flashMessage.className = `flash-message flash-${type}`;
+      flashMessage.classList.remove('is-hidden');
+
+      setTimeout(() => {
+        flashMessage.classList.add('is-hidden');
+      }, 5000);
+    }
+  </script>
+</body>
+</html>

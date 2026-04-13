@@ -1,0 +1,23 @@
+[Unit]
+Description=Kiro Relay Portal
+After=network.target kiro-upstream.service
+Requires=kiro-upstream.service
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+WorkingDirectory=__APP_ROOT__/app
+EnvironmentFile=__CONFIG_ROOT__/relay.env
+ExecStart=__APP_ROOT__/venv/bin/python __APP_ROOT__/app/server.py serve --host 127.0.0.1 --port 4173
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=__APP_ROOT__/app __STATE_ROOT__
+
+[Install]
+WantedBy=multi-user.target
