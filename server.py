@@ -710,6 +710,7 @@ def serialize_entry_provider(row: sqlite3.Row, *, include_health: bool = False) 
         "managedFields": managed_fields,
     }
     payload.update(provider_sync_summary(row, payload))
+    payload["publicSignupEnabled"] = provider_available_for_public_signup(payload)
     if include_health:
         payload["health"] = probe_entry_provider_health(payload)
     return payload
@@ -848,6 +849,13 @@ def build_entry_provider_diagnostics(row: sqlite3.Row) -> dict[str, Any]:
         target_host = api_host or public_host or admin_host
         target_port = api_port or public_port or admin_port
         target_is_local = is_private_or_loopback_host(target_host)
+        admin_api_probe: dict[str, Any] = {"reachable": None, "detail": "skipped"}
+        if provider.get("remoteSyncEnabled"):
+            try:
+                sub2api_admin_request(row, "GET", "/api/v1/admin/settings/admin-api-key")
+                admin_api_probe = {"reachable": True, "detail": "authorized"}
+            except PortalError as exc:
+                admin_api_probe = {"reachable": False, "detail": exc.message}
         diagnostics["runtime"] = {
             "sourceBundlePath": str(SUB2API_SOURCE_DIR),
             "sourceBundlePresent": SUB2API_SOURCE_DIR.exists(),
@@ -857,6 +865,7 @@ def build_entry_provider_diagnostics(row: sqlite3.Row) -> dict[str, Any]:
             "targetHost": target_host,
             "targetPort": target_port,
             "targetIsLocal": target_is_local,
+            "adminApiProbe": admin_api_probe,
             "tcpProbe": probe_tcp_endpoint(target_host, target_port) if target_is_local else {
                 "reachable": None,
                 "host": target_host,
@@ -880,6 +889,11 @@ def build_entry_provider_diagnostics(row: sqlite3.Row) -> dict[str, Any]:
                     "label": "go_available",
                     "ok": diagnostics["runtime"]["goAvailable"],
                     "detail": "go" if diagnostics["runtime"]["goAvailable"] else "go_missing",
+                },
+                {
+                    "label": "admin_api_auth",
+                    "ok": diagnostics["runtime"]["adminApiProbe"]["reachable"],
+                    "detail": diagnostics["runtime"]["adminApiProbe"]["detail"],
                 },
             ]
         )
@@ -1980,7 +1994,7 @@ def build_user_dashboard(row: sqlite3.Row) -> dict[str, Any]:
         "quotas": quota_cards(row),
         "externalEntry": {
             "provider": provider,
-            "message": "该套餐通过外部入口交付，请使用对应入口继续。",
+            "message": provider.get("syncMessage") or "该套餐通过外部入口交付，请使用对应入口继续。",
         },
         }
 
@@ -2064,6 +2078,8 @@ def validate_user_payload(payload: dict[str, Any], *, require_password: bool) ->
 def provider_available_for_public_signup(provider: dict[str, Any]) -> bool:
     if provider.get("key") == "kiro":
         return True
+    if provider.get("key") == "sub2api":
+        return bool(provider.get("enabled") and provider.get("configured") and provider.get("remoteSyncEnabled"))
     return bool(provider.get("enabled") and provider.get("configured"))
 
 
@@ -2274,6 +2290,16 @@ def create_app() -> Flask:
             "portal": {"dbPath": str(DB_PATH), "baseUrl": portal_base_url()},
             "entries": providers,
         }
+        enabled_external_issues = [
+            entry
+            for entry in providers
+            if entry.get("key") != "kiro"
+            and entry.get("enabled")
+            and entry.get("configured")
+            and not (entry.get("health") or {}).get("reachable")
+        ]
+        if enabled_external_issues:
+            health["status"] = "degraded"
         try:
             settings = upstream_admin_request("GET", "/v2/settings")
             health["upstream"] = {
@@ -2707,7 +2733,26 @@ def create_app() -> Flask:
         require_admin()
         page = int(request.args.get("page", "1"))
         page_size = int(request.args.get("pageSize", "50"))
-        payload = upstream_admin_request("GET", "/v2/accounts", params={"page": page, "pageSize": page_size, "status": request.args.get("status", "all")})
+        try:
+            payload = upstream_admin_request("GET", "/v2/accounts", params={"page": page, "pageSize": page_size, "status": request.args.get("status", "all")})
+        except PortalError as exc:
+            return jsonify(
+                {
+                    "accounts": [],
+                    "statusStats": {},
+                    "accountStats": {},
+                    "quotaStats": {},
+                    "reachable": False,
+                    "error": exc.message,
+                }
+            )
+        if not isinstance(payload, dict):
+            payload = {"accounts": []}
+        payload.setdefault("accounts", [])
+        payload.setdefault("statusStats", {})
+        payload.setdefault("accountStats", {})
+        payload.setdefault("quotaStats", {})
+        payload["reachable"] = True
         return jsonify(payload)
 
     @app.get("/api/admin/snapshots")

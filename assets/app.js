@@ -160,7 +160,9 @@ function renderRoute() {
 
 function renderConfig() {
   if (!state.config) return;
-  $("workspaceBaseUrl").textContent = state.dashboard && state.dashboard.user ? state.dashboard.user.baseUrl : state.config.apiBaseUrl;
+  $("workspaceBaseUrl").textContent = state.dashboard && state.dashboard.user
+    ? (state.dashboard.user.baseUrl || "请在对应入口查看 Gateway Base URL")
+    : state.config.apiBaseUrl;
   updateSnippet();
   state.providers = state.config.providers || [];
   renderProviderSelects();
@@ -251,7 +253,7 @@ function renderProviderSelects() {
   const adminSelect = $("adminProviderSelect");
   const currentSignup = signupSelect ? signupSelect.value : "kiro";
   const currentAdmin = adminSelect ? adminSelect.value : "kiro";
-  const publicProviders = state.providers.filter((provider) => provider.key === "kiro" || provider.enabled);
+  const publicProviders = state.providers.filter((provider) => provider.key === "kiro" || provider.publicSignupEnabled);
   const adminProviders = state.providers.length ? state.providers : [{ key: "kiro", label: "Kiro Relay" }];
 
   if (signupSelect) {
@@ -388,7 +390,7 @@ function renderEntryGrid(nodeId, audience = "public") {
   const providers = state.providers.filter((provider) => {
     if (provider.key === "kiro") return true;
     if (audience === "admin") return provider.configured || provider.enabled;
-    return provider.enabled;
+    return provider.publicSignupEnabled;
   });
   node.innerHTML = providers.length
     ? providers.map((provider) => entryCardTemplate(provider, audience)).join("")
@@ -504,6 +506,7 @@ function providerCardTemplate(provider) {
         </div>
         <div class="provider-actions">
           <button class="button button-primary" type="submit">保存配置</button>
+          <button class="button button-secondary" type="button" data-action="refresh-provider-diagnostics" data-provider-key="${escapeHtml(provider.key)}">刷新诊断</button>
           <button class="button button-secondary" type="button" data-action="open-provider-entry" data-url="${escapeHtml(provider.publicUrl || "")}" data-mode="${escapeHtml(provider.embedMode || "link")}">打开用户入口</button>
           <button class="button button-secondary" type="button" data-action="open-provider-entry" data-url="${escapeHtml(provider.adminUrl || "")}" data-mode="${escapeHtml(provider.embedMode || "link")}">打开管理入口</button>
         </div>
@@ -738,6 +741,23 @@ async function loadUserSession() {
   renderWorkspace();
 }
 
+async function refreshProviderDiagnostics() {
+  if (!state.admin || !state.providers.length) {
+    state.providerDiagnostics = {};
+    return;
+  }
+  const results = await Promise.allSettled(
+    state.providers.map((provider) => api(`/api/admin/providers/${encodeURIComponent(provider.key)}/diagnostics`))
+  );
+  const diagnostics = {};
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled" && result.value && result.value.diagnostics) {
+      diagnostics[state.providers[index].key] = result.value.diagnostics;
+    }
+  });
+  state.providerDiagnostics = diagnostics;
+}
+
 async function refreshAdminData() {
   if (!state.admin) return;
   const [overviewResult, usersResult, accountsResult, snapshotsResult, providersResult] = await Promise.allSettled([
@@ -758,6 +778,7 @@ async function refreshAdminData() {
   if (state.config) {
     state.config.providers = state.providers;
   }
+  await refreshProviderDiagnostics();
 
   renderOverview();
   renderUsers();
@@ -784,6 +805,7 @@ async function loadAdminSession() {
     await refreshAdminData();
   } catch (error) {
     state.admin = null;
+    state.providerDiagnostics = {};
     state.snapshots = [];
   }
   $("adminLoginShell").classList.toggle("is-hidden", Boolean(state.admin));
@@ -940,6 +962,7 @@ function bindAdminEvents() {
     state.overview = null;
     state.adminUsers = [];
     state.accounts = [];
+    state.providerDiagnostics = {};
     state.snapshots = [];
     state.providers = (state.config && state.config.providers) || [];
     $("adminLoginShell").classList.remove("is-hidden");
@@ -1133,6 +1156,7 @@ function bindAdminEvents() {
           publicUrl: String(formData.get("publicUrl") || ""),
           adminUrl: String(formData.get("adminUrl") || ""),
           adminApiKey: String(formData.get("adminApiKey") || ""),
+          clearAdminApiKey: formData.get("clearAdminApiKey") === "on",
           apiBaseUrl: String(formData.get("apiBaseUrl") || ""),
           healthUrl: String(formData.get("healthUrl") || ""),
           defaultAllowedGroups: String(formData.get("defaultAllowedGroups") || ""),
@@ -1149,9 +1173,15 @@ function bindAdminEvents() {
     }
   });
 
-  $("providerAdminGrid").addEventListener("click", (event) => {
+  $("providerAdminGrid").addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
+    if (button.dataset.action === "refresh-provider-diagnostics") {
+      await refreshProviderDiagnostics();
+      renderProviderAdminCards();
+      showFlash("入口诊断已刷新");
+      return;
+    }
     if (button.dataset.action === "open-provider-entry") {
       openEntryUrl(button.dataset.url || "", button.dataset.mode || "link");
     }
