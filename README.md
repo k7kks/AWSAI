@@ -1,113 +1,120 @@
-﻿# Kiro Relay
+# Kiro Relay
 
-Kiro Relay 是一个面向正式服务端部署的中转门户，而不是前端 Demo。
+Kiro Relay 是一套面向正式部署的服务端中转系统，不是前端 Demo。
 
-它把三类能力放在同一套服务里：
+它把用户门户、管理后台和 OpenAI 兼容网关放进同一个服务里，同时支持两类上游：
 
-- 用户门户：注册、登录、套餐查看、入口分流
-- 管理后台：用户管理、入口管理、快照、账号池、注册任务
-- 网关层：对外提供 OpenAI 兼容 `/v1/*` 接口，并把请求转发给上游
+- `kiro`：当前服务直接管理的原生上游
+- `sub2api`：外部接入的成熟业务系统，由当前服务做用户映射、后台管理和网关转发
 
-当前仓库同时支持两类套餐入口：
+当前版本的关键设计是：
 
-- `kiro`：内置原生中转，用户在本系统内直接拿 API Key 和 Base URL
-- `sub2api`：外部受管入口，用户通过外部入口继续使用，后台可选远端同步用户
+- 用户前台统一，不再区分 `kiro` 或 `sub2api`
+- 后台保留 provider 维度，管理员可以单独管理两套逻辑
+- `/v1/*` 网关按用户 API key 反查本地用户，再决定转发到哪个 provider
 
-## 系统定位
+## 统一用户侧
 
-这个项目的目标不是“做一个能点的页面”，而是提供一套可以长期运维的服务端系统：
+用户访问门户时，只看到一套入口：
 
-- 本地持久化用户、管理员、会话、快照元数据
-- 对上游 Kiro / Amazon Q 中转服务做统一控制
-- 对外部入口（如 Sub2API）做接入、诊断、开关和同步状态管理
-- 保留 Windows 启动脚本和 Linux 部署脚本，便于实际落地
+- 登录
+- 注册
+- 工作区面板
+- API Key
+- Base URL
+- OpenAI SDK 示例
 
-## 核心能力
+前台不再暴露“选 Kiro 还是选 Sub2API”的概念。用户拿到哪个套餐，由后台创建的用户记录决定。
 
-### 1. 原生 Kiro 中转
+系统内部的做法是：
 
-- 用户注册后自动在上游 Kiro 网关创建用户
-- 门户保存本地用户映射、配额、限速和 API Key
-- 用户面板提供 Base URL、API Key、用量概览
-- 管理后台支持用户启停、删除、Key 轮换
+- `portal_users.provider_key` 标记该用户属于哪个 provider
+- `portal_users.upstream_api_key` 保存这个用户真实可用的上游 API key
+- 用户调用 `/v1/*` 时，网关先用传入的 key 反查本地用户，再路由到对应 provider
 
-### 2. Sub2API 外部入口集成
+这意味着用户体验是统一的，但后端依然是两套隔离逻辑。
 
-- 门户与管理后台都能显示 `sub2api` 入口卡片
-- 后台可以配置 `public/admin/api/health` 地址、默认分组、默认并发、初始余额
-- 支持两种模式：
-  - `local_only`：只保留本地套餐记录，不做远端同步
-  - `remote_sync`：配置 `admin API key` 后，创建/更新/删除用户时同步到 Sub2API
-- 提供服务端诊断信息：
-  - 配置来源（数据库 / 环境变量）
-  - 健康检查
-  - TCP 可达性
-  - Admin API 鉴权检查
-  - Docker / Go 运行条件探测
+## 后台能力
 
-### 3. 管理后台
+管理后台仍然按 provider 管理：
 
-- 本地管理员登录
-- 中转用户管理
-- 入口提供方管理
-- 账号池刷新、启停、删除
-- 快照创建、下载、恢复命令复制
-- 注册任务与注册账号管理
-
-### 4. 运维能力
-
-- `/healthz` 健康检查
-- 会话探测端点：`/api/auth/session`、`/api/admin/session`
+- 用户管理
+- provider 配置
+- provider 健康检查和诊断
+- 账号池管理
 - 快照备份与恢复
-- Windows 一键启动、Linux systemd 安装
+- 注册任务管理
 
-## 服务端架构
+后台可以同时看到：
 
-### 请求路径
+- `kiro` 的内置能力
+- `sub2api` 的接入状态、管理地址、API Base URL、健康检查地址、admin API key 状态
 
-- 用户访问 `/`：进入用户门户
-- 用户访问 `/admin`：进入管理后台
-- 客户端访问 `/v1/*`：进入 OpenAI 兼容网关
-- 管理员访问 `/api/admin/providers`：管理入口提供方
+## Sub2API 接入方式
 
-### Provider 模型
+Sub2API 现在不是一个前台可见的“第二入口页面”，而是后台可管理的外部 provider。
 
-系统内部把入口抽象为 `portal_entry_providers`：
+只要在管理后台或环境变量里配置这些信息，就可以接入：
 
-- `kiro`：`native`，由当前 Flask 服务直接承载
-- `sub2api`：`external`，通过外部地址跳转或同步远端用户
+- `publicUrl`
+- `adminUrl`
+- `apiBaseUrl`
+- `healthUrl`
+- `adminApiKey`
 
-公开注册是否展示给用户，不由前端写死，而由服务端决定：
+没有域名也可以，直接用 IP 地址即可，例如：
 
-- `kiro` 总是允许展示
-- `sub2api` 只有在“已启用 + 已配置 + 可远端同步”时才对前台开放
-- 后台始终可见，方便管理员继续配置和诊断
+- `http://<公网IP>:8080`
+- `http://<公网IP>:8080/admin`
+- `http://<公网IP>:8080/v1`
+- `http://<公网IP>:8080/health`
 
-更多设计细节见：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+当 `sub2api` 配好 `adminApiKey` 后，系统会进入 `remote_sync` 模式：
 
-## 仓库结构
+- 创建本地用户时，同步创建远端用户
+- 为该用户申请 Sub2API API key
+- 把这个 key 保存到 `portal_users.upstream_api_key`
+- 用户后续直接使用当前门户发下去的 key 调用 `/v1/*`
 
-项目关键目录和文件说明见：[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
+如果只配了地址、没配 `adminApiKey`，则保持 `local_only`：
 
-最常用的几个入口：
+- 后台仍可维护 provider
+- 不自动创建远端用户
+- 不适合作为正式可售套餐
 
-- `server.py`：Flask 主服务，包含 API、会话、用户、provider、快照、兼容网关
-- `index.html`：统一门户页面，用户和管理员入口共用
-- `assets/app.js`：前端状态与 API 调用逻辑
+## 网关路由模型
+
+外部客户端始终调用当前门户的 `/v1/*`。
+
+网关处理流程如下：
+
+1. 从 `Authorization`、`x-api-key` 或 `x-goog-api-key` 读取 API key
+2. 在 `portal_users.upstream_api_key` 中查找所属用户
+3. 根据该用户的 `provider_key` 找到目标 provider
+4. 把请求转发给：
+   - Kiro 原生上游
+   - Sub2API 的 `apiBaseUrl`
+5. 对上游重新注入真实鉴权头
+
+因此，前台统一，网关统一，provider 差异只保留在后台和服务端路由层。
+
+## 关键文件
+
+- `server.py`：Flask 主服务，包含页面接口、后台接口、provider 管理和 `/v1/*` 网关
+- `index.html`：统一门户页面，公共前台与管理后台共用
+- `assets/app.js`：前端状态管理和 API 调用逻辑
 - `assets/styles.css`：门户样式
-- `start.ps1`：只启动门户
-- `start-stack.ps1`：同时启动门户和上游 Kiro 中转
-- `deploy/linux/install-relay.sh`：Linux 安装脚本
+- `docs/ARCHITECTURE.md`：服务端架构说明
+- `docs/PROJECT_STRUCTURE.md`：仓库结构说明
 
-## 本地开发与启动
+## 本地启动
 
-### 依赖
+依赖：
 
 - Python 3.11+
-- Windows 下可直接运行 PowerShell 启动脚本
-- 如果要实际部署 Sub2API，本机还需要 Docker 或 Go 构建环境
+- Windows PowerShell 或 Linux shell
 
-安装依赖：
+安装：
 
 ```powershell
 python -m venv .venv
@@ -115,72 +122,39 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ```
 
-### 只启动门户
+只启动门户：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-### 启动完整 Kiro 栈
+启动完整栈：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start-stack.ps1
 ```
 
-### 停止完整栈
+停止完整栈：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\stop-stack.ps1
 ```
 
-## 生产部署
+## 访问入口
 
-### Windows
+- 用户前台：`/`
+- 管理后台：`/admin`
+- 健康检查：`/healthz`
 
-准备运行环境：
+如果服务绑定在公网 IP 上，直接按 IP 访问即可：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\deploy\windows\install-relay.ps1
-```
+- `http://<公网IP>:<端口>/`
+- `http://<公网IP>:<端口>/admin`
 
-启动：
+## 生产配置
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start-stack.ps1
-```
+建议优先用环境变量固定正式配置，尤其是 `sub2api`：
 
-### Linux
-
-仓库已提供：
-
-- `deploy/linux/install-relay.sh`
-- `deploy/linux/kiro-portal.service`
-- `deploy/linux/kiro-upstream.service`
-- `deploy/linux/relay.env.example`
-
-典型安装：
-
-```bash
-sudo bash deploy/linux/install-relay.sh
-sudo nano /etc/kiro-relay/relay.env
-sudo systemctl restart kiro-upstream kiro-portal
-```
-
-## Sub2API 接入说明
-
-### 推荐策略
-
-如果你要把 `sub2api` 当正式套餐接入，应该按服务端方式配置，而不是仅在页面里填几个 URL：
-
-- 用环境变量固定生产地址和密钥
-- 让管理后台用于查看状态，而不是充当唯一配置源
-- 没有 `admin API key` 时，不对前台开放 `sub2api` 自助注册
-
-### 关键环境变量
-
-见 [.env.example](.env.example)，与 `sub2api` 相关的主要配置有：
-
-- `RELAY_SUB2API_BASE_URL`
 - `RELAY_SUB2API_PUBLIC_URL`
 - `RELAY_SUB2API_ADMIN_URL`
 - `RELAY_SUB2API_API_BASE_URL`
@@ -191,107 +165,21 @@ sudo systemctl restart kiro-upstream kiro-portal
 - `RELAY_SUB2API_INITIAL_BALANCE`
 - `RELAY_SUB2API_ENABLED`
 
-### 后台看到的状态含义
+如果这些字段由环境变量托管，后台会展示状态，但不会覆盖它们。
 
-- `native`：当前服务内置入口
-- `local only`：只保留本地套餐记录，还没有远端同步能力
-- `remote sync`：已具备同步 Sub2API 用户的条件
-- `env managed`：配置受环境变量托管，后台不能覆盖这些字段
+## 已实现的服务端能力
 
-## 路由与接口
+- 本地用户与管理员会话
+- Kiro 原生用户创建、更新、删除、Key 轮换
+- Sub2API provider 配置、诊断和远端同步
+- 用户 API key 反查路由
+- OpenAI 兼容 `/v1/models`
+- OpenAI 兼容 `/v1/responses`
+- OpenAI 兼容 `/v1/<subpath>`
+- 快照创建、下载、恢复命令复制
+- 账号池与注册任务管理
 
-### 页面入口
+## 文档
 
-- 用户入口：`/`
-- 管理入口：`/admin`
-- 健康检查：`/healthz`
-
-### 用户侧接口
-
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/session`
-- `GET /api/dashboard`
-- `POST /api/apikey/rotate`
-
-### 管理侧接口
-
-- `POST /api/admin/login`
-- `POST /api/admin/logout`
-- `GET /api/admin/session`
-- `GET /api/admin/overview`
-- `GET /api/admin/users`
-- `GET /api/admin/providers`
-- `GET /api/admin/providers/<entry_key>/diagnostics`
-- `PUT /api/admin/providers/<entry_key>`
-- `GET /api/admin/snapshots`
-- `POST /api/admin/snapshots`
-
-### OpenAI 兼容网关
-
-- `GET /v1/models`
-- `POST /v1/responses`
-- `GET|POST|PUT|PATCH|DELETE /v1/<subpath>`
-
-## 数据与状态文件
-
-运行时常见文件：
-
-- `portal.db`：本地门户数据库
-- `run/portal-session-secret.txt`：会话密钥
-- `run/encryption.key`：敏感字段加密密钥
-- `run/services.json`：Windows 启动脚本记录的进程信息
-- `snapshots/`：快照目录
-- `upstream/data/`：Kiro 上游运行数据
-
-## 快照与恢复
-
-创建快照：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\snapshot-backup.ps1 -Label before-upgrade
-```
-
-查看快照：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\snapshot-list.ps1
-```
-
-恢复演练：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\snapshot-restore.ps1 -Snapshot 20260409T110000Z-before-upgrade -DryRun
-```
-
-执行恢复：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\snapshot-restore.ps1 -Snapshot 20260409T110000Z-before-upgrade
-```
-
-## 公网访问建议
-
-建议只暴露门户层，对内保留上游服务：
-
-- `relay.example.com` -> 门户首页 `/`
-- `relay.example.com/admin` -> 管理后台
-- `relay.example.com/v1` -> OpenAI 兼容 API
-- 内部上游 Kiro 仅监听 `127.0.0.1:62311`
-
-可参考：
-
-- `deploy/Caddyfile.example`
-- `deploy/cloudflared/config.yml.example`
-
-## 相关文档
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
-- [sub2api-main/sub2api-main/README_CN.md](sub2api-main/sub2api-main/README_CN.md)
-
-## 参考
-
-- ZeekLog 文章: [AWS Kiro 账号池管理系统](https://zeeklog.com/aws-kiro-zhang-hao-chi-guan-li-xi-tong-jiang-amazon-q-developer-api-zhuan-huan-wei-openai-jian-rong-ge-shi-zhi-chi-duo-zhang-hao-chi-oidc-zi-dong-ren-zheng-ling-pai-zi-dong-shua-xin-web-25/)
-- 上游项目: [kkddytd/claude-api](https://github.com/kkddytd/claude-api)
+- [架构说明](./docs/ARCHITECTURE.md)
+- [项目结构](./docs/PROJECT_STRUCTURE.md)

@@ -1,161 +1,213 @@
-﻿# 架构说明
+# 架构说明
 
-## 1. 设计目标
+## 1. 总体目标
 
-Kiro Relay 以服务端为中心设计，核心目标有四个：
+Kiro Relay 以服务端为中心设计，目标不是做两套前台，而是把两类上游统一收敛到一个门户和一个网关下：
 
-- 统一门户和网关入口
-- 把用户、管理员、套餐和外部入口做成本地可控状态
-- 把 Kiro 与 Sub2API 视为两套不同后端，而不是强行揉成一个协议
-- 让系统在“上游离线”“外部入口未接好”“管理员未登录”这些场景下仍然能部分可用
+- 用户只面对一套门户
+- 管理员在后台管理不同 provider
+- 网关根据 API key 自动分流到正确上游
 
-## 2. 组件划分
+因此，这个项目不是“前台切换入口”的壳，而是一套本地持久化、可运维、可扩展的 relay control plane。
+
+## 2. 核心组件
 
 ### 门户层
 
-由 `server.py + index.html + assets/*` 组成，负责：
+由 `server.py`、`index.html`、`assets/app.js` 和 `assets/styles.css` 组成，负责：
 
-- 页面渲染
-- 本地会话管理
-- 用户注册/登录
+- 用户注册与登录
 - 管理员登录
-- provider 配置和诊断展示
+- 用户工作区面板
+- provider 配置页面
+- 本地 session 管理
 
-### Kiro 原生中转层
+### Provider 层
 
-由当前服务对接 `claude-server` 上游：
+系统当前支持两个 provider：
 
-- 创建用户时向上游 `/v2/users` 建立真实账号
-- 轮换 Key、删除用户、读设置、读账号池都走上游管理接口
-- 对外再暴露 `/v1/*` OpenAI 兼容接口
+- `kiro`
+  - `native`
+  - 当前 Flask 服务直接对接上游 Kiro / Claude relay
+- `sub2api`
+  - `external`
+  - 当前服务不重写它的业务逻辑，只负责接入、同步和转发
 
-### Sub2API 外部入口层
+### 网关层
 
-Sub2API 不被当成“另一个 `/v1` 代理实现”，而被视作独立 provider：
+对外提供统一的 OpenAI 兼容接口：
 
-- 用户侧入口是外部地址
-- 后台可以保存远端地址、健康检查地址、管理 API key
-- 只有具备远端同步条件时，才允许用户前台选这个套餐
+- `GET /v1/models`
+- `POST /v1/responses`
+- `GET|POST|PUT|PATCH|DELETE /v1/<subpath>`
 
-## 3. Provider 模型
+调用方不需要知道自己最终落到哪个 provider。
 
-数据库表：`portal_entry_providers`
+## 3. 统一前台，后台区分 provider
+
+当前版本的公开前台不再显示 provider 选择。
+
+用户看到的始终是：
+
+- 登录
+- 注册
+- API Key
+- Base URL
+- SDK 示例
+
+provider 差异只保留在服务端：
+
+- `portal_users.provider_key`
+- `portal_users.upstream_api_key`
+- `portal_entry_providers`
+
+这意味着：
+
+- 前台页面统一
+- 管理后台仍然能分别管理 `kiro` 和 `sub2api`
+- 用户拿哪个套餐，不由前端决定，而由后台建档和本地用户记录决定
+
+## 4. 数据模型
+
+### `portal_users`
 
 关键字段：
 
-- `entry_key`：入口标识，如 `kiro`、`sub2api`
-- `kind`：`native` 或 `external`
-- `public_url` / `admin_url` / `api_base_url` / `health_url`
+- `provider_key`
+- `upstream_user_id`
+- `upstream_api_key`
+- `workspace`
+- `email`
+- `plan_key`
+- `enabled`
+
+这里最关键的是：
+
+- `provider_key` 决定用户属于哪个 provider
+- `upstream_api_key` 保存这个用户真实可用的上游 API key
+
+当前实现已经为 `upstream_api_key` 建索引，供网关快速反查用户。
+
+### `portal_entry_providers`
+
+关键字段：
+
+- `entry_key`
+- `kind`
+- `public_url`
+- `admin_url`
+- `api_base_url`
+- `health_url`
 - `admin_api_key_encrypted`
 - `default_allowed_groups`
 - `default_concurrency`
 - `initial_balance`
 - `embed_mode`
 
-### 运行规则
+用途：
 
-- `kiro` 固定为 `native`，由当前服务直接承载
-- `sub2api` 固定为 `external`
-- 配置可来自数据库，也可来自环境变量
-- 如果某些字段由环境变量托管，后台只能查看，不能覆盖
+- 后台展示 provider 状态
+- 保存 Sub2API 的外部地址和管理凭据
+- 决定是否允许远端同步
 
-## 4. 用户创建流程
+## 5. 用户创建流程
 
 ### Kiro 用户
 
-1. 门户校验本地参数
-2. 调上游 `/v2/users` 创建真实用户
-3. 把上游 `id` 和 `api_key` 保存到 `portal_users`
-4. 用户登录后直接在本面板拿到 API Key 与 Base URL
+1. 本地校验参数
+2. 调用 Kiro 上游创建真实用户
+3. 保存 `upstream_user_id` 和 `upstream_api_key`
+4. 用户登录后在统一工作区面板查看自己的 key 和 base URL
 
 ### Sub2API 用户
 
-分两种模式：
+1. 本地校验参数
+2. 调用 Sub2API 管理接口创建远端用户
+3. 用该用户邮箱和密码登录 Sub2API
+4. 为该用户申请 API key
+5. 把得到的 key 保存到 `portal_users.upstream_api_key`
 
-#### local_only
+这样做的结果是：
 
-条件：只配置了入口地址，没有配置有效的 `admin API key`
+- 用户前台不需要再跳去第二套门户拿 key
+- 当前 relay 可以直接把这把 key 当作用户的调用凭据
+- `/v1/*` 可以统一按 key 路由
 
-行为：
+## 6. 网关路由流程
 
-- 后台仍可建立本地套餐记录
-- 不创建远端真实用户
-- 前台用户不显示这个 provider
-- 管理后台卡片会显示 `local only`
+请求进入 `/v1/*` 后，服务端按以下顺序处理：
 
-#### remote_sync
+1. 从 `Authorization`、`x-api-key` 或 `x-goog-api-key` 提取 key
+2. 在 `portal_users.upstream_api_key` 中查找本地用户
+3. 检查该用户是否启用
+4. 根据 `provider_key` 查找 provider 配置
+5. 构造目标 API Base URL
+6. 去掉客户端原始鉴权头
+7. 注入真实上游鉴权头
+8. 转发到目标 provider
 
-条件：已配置入口地址 + `admin API key`
+其中：
 
-行为：
+- `kiro` 的 `/v1/responses` 继续走兼容转换
+- 非 `kiro` provider 的 `/v1/responses` 直接透传
+- `kiro` 不支持 `/v1/responses/*` 子路径时会明确返回 400
 
-- 创建用户时调用 `/api/v1/admin/users`
-- 更新用户时调用 `/api/v1/admin/users/:id`
-- 删除用户时调用 `/api/v1/admin/users/:id`
-- 用户面板不显示 Kiro API Key，而是提示进入外部入口继续使用
+## 7. 管理后台职责
 
-## 5. 会话与页面加载策略
+后台负责 provider 维度的管理，不负责给用户展示 provider 差异。
 
-为了避免前端一打开页面就产生无意义 401：
+管理员可以做的事情包括：
 
-- 用户页先调用 `/api/auth/session`
-- 管理页先调用 `/api/admin/session`
-- 只有确认已登录，才继续拉取 dashboard 或管理数据
+- 新建和编辑用户
+- 选择用户归属的 provider
+- 保存或更新 Sub2API 的 `public/admin/api/health` 地址
+- 保存或清除 Sub2API 的 `admin API key`
+- 查看 provider 健康和诊断信息
+- 管理快照、账号池和注册任务
 
-这样做的好处：
+这也是为什么用户前台统一后，后台仍然必须保留 provider 管理能力。
 
-- 浏览器控制台更干净
-- 未登录页面不会因为预探测而出现资源报错
-- 网页端和 API 端状态分离更清晰
+## 8. Sub2API 配置原则
 
-## 6. 健康与诊断
+Sub2API 接入按服务端思维处理：
 
-### `/healthz`
+- 可以使用域名
+- 也可以直接使用 IP 地址
+- 生产环境建议用环境变量托管
+- 后台主要用于查看状态和补齐配置，不应成为唯一的配置来源
 
-返回三类状态：
+一个典型的 IP 配置示例是：
 
-- 门户自身状态
-- Kiro upstream 可达性
-- 已启用外部 provider 的健康状态
+- `public_url = http://203.0.113.10:8080`
+- `admin_url = http://203.0.113.10:8080/admin`
+- `api_base_url = http://203.0.113.10:8080/v1`
+- `health_url = http://203.0.113.10:8080/health`
 
-只要“已启用且已配置”的外部入口不可达，整体状态会降级为 `degraded`。
+当 `admin_api_key` 有效时，provider 进入 `remote_sync`。
+当只有地址、没有管理密钥时，provider 只能停留在 `local_only`。
 
-### Provider 诊断接口
+## 9. 为什么不在前台区分 Kiro 和 Sub2API
 
-接口：`GET /api/admin/providers/<entry_key>/diagnostics`
+因为对用户来说，这两者不应该体现为两套站点入口，而应该只是“不同来源的套餐”。
 
-当前可输出：
+如果前台也做 provider 区分，会带来这些问题：
 
-- provider 基本配置
-- 配置来源
-- 同步模式
-- 源码包是否存在
-- Docker / Go / Node 是否可用
-- TCP 探测
-- Admin API 探测
+- 用户需要理解不必要的内部实现细节
+- 同一个门户会出现两套注册和交付心智
+- API Key、Base URL 和使用方式无法统一
 
-## 7. 为什么不把 Kiro 和 Sub2API 融成一套逻辑
+当前架构选择的是：
 
-因为两者在系统角色上不同：
+- 前台统一
+- 后台区分
+- 网关自动路由
+- 本地用户记录承担 provider 归属
 
-- Kiro 是当前服务的原生上游
-- Sub2API 是一个完整的外部业务系统
+这更符合正式服务端系统，而不是演示型页面。
 
-如果硬把两者揉成同一个“用户后端协议”，会带来三个问题：
+## 10. 边界与约束
 
-- 管理语义不一致，容易出现伪成功状态
-- API Key、用户入口、账单和权限模型会混淆
-- 运维层无法判断问题到底在本系统还是外部系统
-
-所以当前架构采用：
-
-- 统一门户
-- 分 provider 管理
-- 后端逻辑隔离
-- 前台通过套餐选择入口
-
-## 8. 当前已知边界
-
-- 本仓库已集成 Sub2API 管理逻辑，但不包含可直接运行的 Sub2API 进程
-- 如果当前机器没有 Docker / Go，就只能先接已有的 Sub2API 服务，或单独部署它
-- 生产环境建议使用环境变量托管 Sub2API 配置，而不是只依赖后台手工维护
+- 本仓库负责接入和管理 Sub2API，不内置 Sub2API 进程本体
+- 如果 Sub2API 未配置 `admin API key`，就不应把它当成可正式交付套餐
+- 用户 API key 现在直接对应真实上游 key，因此数据库保护和备份策略必须按生产标准执行
+- provider 配置若由环境变量托管，后台应只读展示，避免和运维配置打架

@@ -354,6 +354,7 @@ def ensure_database() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_portal_sessions_role_subject ON portal_sessions(role, subject_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_portal_users_upstream_api_key ON portal_users(upstream_api_key)")
         # Registration manager tables
         conn.execute(
             """
@@ -1074,6 +1075,123 @@ def sub2api_admin_request(
     return payload if payload else {}
 
 
+def sub2api_user_request(
+    provider_row: sqlite3.Row,
+    method: str,
+    path: str,
+    *,
+    access_token: str,
+    json_body: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    provider = serialize_entry_provider(provider_row)
+    base_url = provider_origin_url(provider)
+    if not base_url:
+        raise PortalError("Sub2API base URL is not configured.", 500)
+
+    token = str(access_token or "").strip()
+    if not token:
+        raise PortalError("Sub2API user access token is missing.", 500)
+
+    url = f"{base_url}{path}"
+    headers = {"Authorization": f"Bearer {token}"}
+    if json_body is not None:
+        headers["Content-Type"] = "application/json"
+
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            json=json_body,
+            params=params,
+            timeout=(SETTINGS.connect_timeout, SETTINGS.read_timeout),
+        )
+    except requests.RequestException as exc:
+        raise PortalError(f"Sub2API user request failed: {format_exception_message(exc)}", 502) from exc
+
+    payload: dict[str, Any] = {}
+    if response.text.strip():
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+
+    if response.status_code >= 400:
+        message = payload.get("message") or payload.get("error") or response.text.strip() or f"HTTP {response.status_code}"
+        raise PortalError(f"Sub2API user request failed: {message}", response.status_code if response.status_code < 500 else 502)
+
+    if isinstance(payload, dict) and "code" in payload:
+        code = int(payload.get("code") or 0)
+        if code != 0:
+            message = str(payload.get("message") or "Sub2API request failed")
+            raise PortalError(f"Sub2API user request failed: {message}", 502)
+        return payload.get("data", {})
+    return payload if payload else {}
+
+
+def provision_sub2api_user_api_key(
+    provider_row: sqlite3.Row,
+    *,
+    email: str,
+    password: str,
+    username: str,
+) -> str:
+    provider = serialize_entry_provider(provider_row)
+    origin = provider_origin_url(provider)
+    if not origin:
+        raise PortalError("Sub2API base URL is not configured.", 500)
+
+    try:
+        response = requests.post(
+            f"{origin}/api/v1/auth/login",
+            headers={"Content-Type": "application/json"},
+            json={"email": email, "password": password, "turnstile_token": ""},
+            timeout=(SETTINGS.connect_timeout, SETTINGS.read_timeout),
+        )
+    except requests.RequestException as exc:
+        raise PortalError(f"Sub2API login failed: {format_exception_message(exc)}", 502) from exc
+
+    payload: dict[str, Any] = {}
+    if response.text.strip():
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+
+    if response.status_code >= 400:
+        message = payload.get("message") or payload.get("error") or response.text.strip() or f"HTTP {response.status_code}"
+        raise PortalError(f"Sub2API login failed: {message}", response.status_code if response.status_code < 500 else 502)
+
+    login_data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(login_data, dict):
+        raise PortalError("Sub2API login returned an invalid payload.", 502)
+    if login_data.get("requires_2fa"):
+        raise PortalError("Sub2API login requires 2FA; relay provisioning cannot continue.", 502)
+
+    access_token = str(login_data.get("access_token") or "").strip()
+    if not access_token:
+        raise PortalError("Sub2API login did not return an access token.", 502)
+
+    safe_name = "".join(ch for ch in username.lower() if ch.isalnum())[:24] or "user"
+    create_payload: dict[str, Any] = {"name": f"relay-{safe_name}"}
+    allowed_groups = json.loads(provider_row["default_allowed_groups"] or "[]")
+    if allowed_groups:
+        create_payload["group_id"] = int(allowed_groups[0])
+
+    api_key_payload = sub2api_user_request(
+        provider_row,
+        "POST",
+        "/api/v1/api-keys",
+        access_token=access_token,
+        json_body=create_payload,
+    )
+    api_key = str(api_key_payload.get("key") or "").strip() if isinstance(api_key_payload, dict) else ""
+    if not api_key:
+        raise PortalError("Sub2API API key provisioning succeeded but returned no key.", 502)
+    return api_key
+
+
 def plan_defaults(plan_key: str) -> dict[str, Any]:
     return PLAN_PROFILES.get(plan_key, PLAN_PROFILES["starter"])
 
@@ -1272,17 +1390,87 @@ def generated_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(20)}"
 
 
-def filtered_proxy_headers(*, content_type: str | None = None, accept: str | None = None) -> dict[str, str]:
+def filtered_proxy_headers(
+    *,
+    content_type: str | None = None,
+    accept: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, str]:
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS
+        if key.lower() not in (HOP_BY_HOP_HEADERS | {"authorization", "x-api-key", "x-goog-api-key"})
     }
     if content_type:
         headers["Content-Type"] = content_type
     if accept:
         headers["Accept"] = accept
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+def extract_request_api_key() -> str:
+    for header_name in ("Authorization", "x-goog-api-key", "x-api-key"):
+        value = str(request.headers.get(header_name) or "").strip()
+        if not value:
+            continue
+        if header_name == "Authorization":
+            parts = value.split(None, 1)
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                return parts[1].strip()
+            continue
+        return value
+    return ""
+
+
+def find_local_user_by_api_key(api_key: str) -> sqlite3.Row | None:
+    key = str(api_key or "").strip()
+    if not key:
+        return None
+    with open_db() as conn:
+        return conn.execute(
+            "SELECT * FROM portal_users WHERE upstream_api_key = ? AND upstream_api_key != ''",
+            (key,),
+        ).fetchone()
+
+
+def gateway_target_api_base_url(provider_row: sqlite3.Row) -> str:
+    if str(provider_row["kind"] or "") == "native":
+        return f"{SETTINGS.upstream_url.rstrip('/')}/v1"
+
+    provider = serialize_entry_provider(provider_row)
+    api_url = str(provider.get("apiBaseUrl") or "").rstrip("/")
+    if api_url:
+        return api_url
+
+    origin = provider_origin_url(provider)
+    if origin:
+        return f"{origin}/v1"
+    raise PortalError(f"{provider.get('label') or provider_row['entry_key']} gateway API base URL is not configured.", 503)
+
+
+def resolve_gateway_request_context() -> tuple[sqlite3.Row, sqlite3.Row, dict[str, Any]]:
+    inbound_api_key = extract_request_api_key()
+    if not inbound_api_key:
+        raise PortalError("API key required. Use Authorization: Bearer <key>.", 401)
+
+    row = find_local_user_by_api_key(inbound_api_key)
+    if not row:
+        raise PortalError("Unknown API key.", 401)
+    if not bool(row["enabled"]):
+        raise PortalError("The API key owner is disabled.", 403)
+
+    provider_key = str(row["provider_key"] or "kiro")
+    provider_row = find_entry_provider_row(provider_key)
+    provider = serialize_entry_provider(provider_row)
+    if not bool(provider.get("enabled", True)):
+        raise PortalError(f"{provider.get('label') or provider_key} is disabled.", 503)
+    if provider_key != "kiro" and not provider.get("configured"):
+        raise PortalError(f"{provider.get('label') or provider_key} is not configured.", 503)
+    if not str(row["upstream_api_key"] or "").strip():
+        raise PortalError(f"{provider.get('label') or provider_key} user has no upstream API key.", 503)
+    return row, provider_row, provider
 
 
 def response_content_text(content: Any) -> str:
@@ -1830,12 +2018,19 @@ def stream_chat_completion_as_responses(upstream: requests.Response, request_pay
     )
 
 
-def upstream_responses_compat() -> Response:
+def upstream_responses_compat(provider_row: sqlite3.Row, upstream_api_key: str) -> Response:
+    if str(provider_row["entry_key"] or "kiro") != "kiro":
+        return upstream_proxy_response(provider_row, upstream_api_key, "responses")
+
     payload = parse_json_body()
     chat_payload = responses_request_to_chat_request(payload)
     stream = bool(payload.get("stream", False))
-    headers = filtered_proxy_headers(content_type="application/json", accept="text/event-stream" if stream else "application/json")
-    target_url = f"{SETTINGS.upstream_url}/v1/chat/completions"
+    headers = filtered_proxy_headers(
+        content_type="application/json",
+        accept="text/event-stream" if stream else "application/json",
+        api_key=upstream_api_key,
+    )
+    target_url = f"{gateway_target_api_base_url(provider_row)}/chat/completions"
 
     try:
         upstream = requests.post(
@@ -1878,9 +2073,10 @@ def upstream_responses_compat() -> Response:
     return stream_chat_completion_as_responses(upstream, payload)
 
 
-def upstream_proxy_response(subpath: str) -> Response:
-    target_url = f"{SETTINGS.upstream_url}/v1/{subpath}"
-    headers = filtered_proxy_headers()
+def upstream_proxy_response(provider_row: sqlite3.Row, upstream_api_key: str, subpath: str) -> Response:
+    normalized_subpath = str(subpath or "").lstrip("/")
+    target_url = f"{gateway_target_api_base_url(provider_row)}/{normalized_subpath}" if normalized_subpath else gateway_target_api_base_url(provider_row)
+    headers = filtered_proxy_headers(api_key=upstream_api_key)
 
     try:
         upstream = requests.request(
@@ -1945,7 +2141,6 @@ def serialize_portal_user(
     provider = provider or serialize_entry_provider_by_key(str(row["provider_key"] or "kiro"))
     plan = plan_defaults(row["plan_key"])
     provider_key = str(row["provider_key"] or "kiro")
-    is_kiro = provider_key == "kiro"
     return {
         "id": row["public_id"],
         "workspace": row["workspace"],
@@ -1957,8 +2152,8 @@ def serialize_portal_user(
         "usecase": row["usecase"],
         "notes": row["notes"],
         "enabled": bool(row["enabled"]),
-        "apiKey": (row["upstream_api_key"] if include_api_key else "****") if is_kiro else "",
-        "baseUrl": provider.get("apiBaseUrl") or (api_base_url() if is_kiro else ""),
+        "apiKey": row["upstream_api_key"] if include_api_key else "****",
+        "baseUrl": api_base_url(),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "dailyQuota": row["daily_quota"],
@@ -1991,11 +2186,7 @@ def build_user_dashboard(row: sqlite3.Row) -> dict[str, Any]:
                 "monthlyCostUsd": 0,
             },
             "daily": empty_usage,
-        "quotas": quota_cards(row),
-        "externalEntry": {
-            "provider": provider,
-            "message": provider.get("syncMessage") or "该套餐通过外部入口交付，请使用对应入口继续。",
-        },
+            "quotas": quota_cards(row),
         }
 
     stats = upstream_admin_request("GET", f"/v2/users/{row['upstream_user_id']}/stats", params={"days": 30})
@@ -2141,6 +2332,12 @@ def create_local_user(payload: dict[str, Any], *, actor: str = "admin") -> sqlit
                 },
             )
             upstream_user_id = str(upstream_user["id"])
+            upstream_api_key = provision_sub2api_user_api_key(
+                provider_row,
+                email=validated["email"],
+                password=validated["password"],
+                username=validated["workspace"],
+            )
 
     try:
         with open_db() as conn:
@@ -2315,28 +2512,24 @@ def create_app() -> Flask:
 
     @app.get("/v1/models")
     def compat_models():
-        created_at = unix_timestamp()
-        return jsonify(
-            {
-                "object": "list",
-                "data": [
-                    {"id": "gpt-5.4", "object": "model", "created": created_at, "owned_by": "relay"},
-                    {"id": "gpt-5.3-codex", "object": "model", "created": created_at, "owned_by": "relay"},
-                ],
-            }
-        )
+        row, provider_row, _provider = resolve_gateway_request_context()
+        return upstream_proxy_response(provider_row, str(row["upstream_api_key"] or ""), "models")
 
     @app.route("/v1/responses", methods=["POST", "OPTIONS"])
     def compat_responses():
         if request.method == "OPTIONS":
             return Response(status=204)
-        return upstream_responses_compat()
+        row, provider_row, _provider = resolve_gateway_request_context()
+        return upstream_responses_compat(provider_row, str(row["upstream_api_key"] or ""))
 
     @app.route("/v1/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     def proxy_v1(subpath: str):
         if request.method == "OPTIONS":
             return Response(status=204)
-        return upstream_proxy_response(subpath)
+        row, provider_row, _provider = resolve_gateway_request_context()
+        if subpath.startswith("responses/") and str(provider_row["entry_key"] or "kiro") == "kiro":
+            raise PortalError("Kiro upstream does not support /v1/responses subpaths.", 400)
+        return upstream_proxy_response(provider_row, str(row["upstream_api_key"] or ""), subpath)
 
     @app.post("/api/auth/register")
     def user_register():
@@ -2632,6 +2825,7 @@ def create_app() -> Flask:
         payload = parse_json_body()
         validated = validate_user_payload({**serialize_portal_user(row), **payload}, require_password=False)
         new_password = str(payload.get("password", ""))
+        updated_upstream_api_key = str(row["upstream_api_key"] or "")
 
         if validated["provider_key"] != str(row["provider_key"] or "kiro"):
             raise PortalError("暂不支持直接切换已有用户的入口类型，请新建目标套餐用户。", 400)
@@ -2680,6 +2874,13 @@ def create_app() -> Flask:
                 f"/api/v1/admin/users/{row['upstream_user_id']}",
                 json_body=update_payload,
             )
+            if new_password and not updated_upstream_api_key:
+                updated_upstream_api_key = provision_sub2api_user_api_key(
+                    provider_row,
+                    email=validated["email"],
+                    password=new_password,
+                    username=validated["workspace"],
+                )
 
         with open_db() as conn:
             conn.execute(
@@ -2687,7 +2888,7 @@ def create_app() -> Flask:
                 UPDATE portal_users
                 SET workspace = ?, email = ?, plan_key = ?, provider_key = ?, usecase = ?, notes = ?, enabled = ?,
                     daily_quota = ?, monthly_quota = ?, request_quota = ?, rate_limit_rpm = ?,
-                    password_hash = COALESCE(?, password_hash), updated_at = ?
+                    upstream_api_key = ?, password_hash = COALESCE(?, password_hash), updated_at = ?
                 WHERE public_id = ?
                 """,
                 (
@@ -2702,6 +2903,7 @@ def create_app() -> Flask:
                     validated["monthly_quota"],
                     validated["request_quota"],
                     validated["rate_limit_rpm"],
+                    updated_upstream_api_key,
                     password_hash(new_password) if new_password else None,
                     isoformat(),
                     public_id,

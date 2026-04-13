@@ -18,17 +18,6 @@
 
   <main class="app-layout">
     <section class="screen" id="publicScreen">
-      <section class="panel entry-panel">
-        <div class="panel-header compact">
-          <div>
-            <p class="eyebrow">Entries</p>
-            <h3>用户入口</h3>
-            <p class="muted">保留 Kiro 原生入口，同时支持跳转到已接入的 Sub2API 门户。</p>
-          </div>
-        </div>
-        <div class="entry-grid" id="publicEntryGrid"></div>
-      </section>
-
       <div class="auth-card" id="publicAuthCard">
         <a class="brand" href="/">
           <span class="brand-mark">KR</span>
@@ -63,13 +52,6 @@
             <input type="text" name="workspace" required>
           </label>
           <label>
-            <span>入口类型</span>
-            <select name="provider" id="signupProviderSelect">
-              <option value="kiro">Kiro 套餐</option>
-              <option value="sub2api">Sub2API 套餐</option>
-            </select>
-          </label>
-          <label>
             <span>邮箱</span>
             <input type="email" name="email" required>
           </label>
@@ -102,11 +84,8 @@
               <p class="eyebrow">Workspace</p>
               <h2 id="workspaceTitle">-</h2>
               <p class="muted" id="workspaceEmail">-</p>
-              <p class="muted" id="workspaceProvider">-</p>
             </div>
             <div class="stack-actions">
-              <button class="button button-secondary is-hidden" type="button" id="openProviderEntryButton">打开入口</button>
-              <button class="button button-secondary" type="button" id="rotateOwnKeyButton">轮换 Key</button>
               <button class="button button-ghost" type="button" id="userLogoutButton">退出</button>
             </div>
           </div>

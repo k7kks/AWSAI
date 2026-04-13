@@ -131,17 +131,7 @@ function applyPlanDefaults(form, planKey) {
 
 function updateSnippet() {
   const currentUser = state.dashboard && state.dashboard.user ? state.dashboard.user : null;
-  if (currentUser && currentUser.providerKey !== "kiro") {
-    const entryUrl = providerTargetUrl(currentUser.entry, "public");
-    $("sdkSnippet").textContent = [
-      "This package is delivered through the external provider entry.",
-      entryUrl ? `Portal entry: ${entryUrl}` : "Portal entry: configure the external entry first.",
-      currentUser.baseUrl ? `Gateway base URL: ${currentUser.baseUrl}` : "Gateway base URL: obtain it from the external entry."
-    ].join("\n");
-    return;
-  }
-
-  const apiKey = currentUser ? (currentUser.apiKey || "请在对应入口获取 API Key") : "sk-your-key";
+  const apiKey = currentUser ? (currentUser.apiKey || "sk-your-key") : "sk-your-key";
   const baseUrl = currentUser ? currentUser.baseUrl : ((state.config && state.config.apiBaseUrl) || "https://example.com/v1");
   $("sdkSnippet").textContent = `from openai import OpenAI
 
@@ -161,12 +151,11 @@ function renderRoute() {
 function renderConfig() {
   if (!state.config) return;
   $("workspaceBaseUrl").textContent = state.dashboard && state.dashboard.user
-    ? (state.dashboard.user.baseUrl || "请在对应入口查看 Gateway Base URL")
+    ? (state.dashboard.user.baseUrl || state.config.apiBaseUrl)
     : state.config.apiBaseUrl;
   updateSnippet();
   state.providers = state.config.providers || [];
   renderProviderSelects();
-  renderEntryGrid("publicEntryGrid", "public");
   renderEntryGrid("adminEntryGrid", "admin");
 }
 
@@ -213,12 +202,9 @@ function renderWorkspace() {
 
   $("workspaceTitle").textContent = ready ? state.dashboard.user.workspace : "-";
   $("workspaceEmail").textContent = ready ? state.dashboard.user.email : "-";
-  $("workspaceProvider").textContent = ready
-    ? `${state.dashboard.user.providerLabel || state.dashboard.user.providerKey || "-"}`
-    : "-";
-  $("workspaceApiKey").textContent = ready ? (state.dashboard.user.apiKey || "该套餐通过外部入口提供 Key") : "-";
+  $("workspaceApiKey").textContent = ready ? (state.dashboard.user.apiKey || "-") : "-";
   $("workspaceBaseUrl").textContent = ready
-    ? (state.dashboard.user.baseUrl || "请在对应入口查看 Gateway Base URL")
+    ? (state.dashboard.user.baseUrl || ((state.config && state.config.apiBaseUrl) || "-"))
     : ((state.config && state.config.apiBaseUrl) || "-");
   $("metricRequests30d").textContent = formatNumber(state.dashboard && state.dashboard.metrics ? state.dashboard.metrics.requests30d : 0);
   $("metricTokens30d").textContent = formatNumber(state.dashboard && state.dashboard.metrics ? state.dashboard.metrics.tokens30d : 0);
@@ -230,10 +216,7 @@ function renderWorkspace() {
   renderQuotaList(state.dashboard ? state.dashboard.quotas : null);
   updateSnippet();
 
-  const isKiro = ready && state.dashboard.user && state.dashboard.user.providerKey === "kiro";
-  $("rotateOwnKeyButton").classList.toggle("is-hidden", !ready || !isKiro);
-  $("openProviderEntryButton").classList.toggle("is-hidden", !ready || isKiro);
-  $("copyOwnKeyButton").classList.toggle("is-hidden", !ready || !isKiro);
+  $("copyOwnKeyButton").classList.toggle("is-hidden", !ready);
   $("copyBaseUrlButton").classList.toggle("is-hidden", !ready || !state.dashboard.user.baseUrl);
 }
 
@@ -249,21 +232,9 @@ function renderOverview() {
 }
 
 function renderProviderSelects() {
-  const signupSelect = $("signupProviderSelect");
   const adminSelect = $("adminProviderSelect");
-  const currentSignup = signupSelect ? signupSelect.value : "kiro";
   const currentAdmin = adminSelect ? adminSelect.value : "kiro";
-  const publicProviders = state.providers.filter((provider) => provider.key === "kiro" || provider.publicSignupEnabled);
   const adminProviders = state.providers.length ? state.providers : [{ key: "kiro", label: "Kiro Relay" }];
-
-  if (signupSelect) {
-    signupSelect.innerHTML = publicProviders
-      .map((provider) => `<option value="${escapeHtml(provider.key)}">${escapeHtml(provider.label)}</option>`)
-      .join("");
-    signupSelect.value = publicProviders.some((provider) => provider.key === currentSignup)
-      ? currentSignup
-      : (publicProviders[0] ? publicProviders[0].key : "kiro");
-  }
 
   if (adminSelect) {
     adminSelect.innerHTML = adminProviders
@@ -791,7 +762,6 @@ async function refreshAdminData() {
   renderAccounts();
   renderSnapshots();
   renderProviderSelects();
-  renderEntryGrid("publicEntryGrid", "public");
   renderEntryGrid("adminEntryGrid", "admin");
   renderProviderAdminCards();
 
@@ -832,18 +802,6 @@ async function loadAdminSession() {
 }
 
 function bindPublicEvents() {
-  $("publicEntryGrid").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-action]");
-    if (!button) return;
-    if (button.dataset.action === "focus-native-public") {
-      $("publicAuthCard").scrollIntoView({ behavior: "smooth", block: "start" });
-      return;
-    }
-    if (button.dataset.action === "open-provider-entry") {
-      openEntryUrl(button.dataset.url || "", button.dataset.mode || "link");
-    }
-  });
-
   document.querySelectorAll("[data-user-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       const target = button.dataset.userTab;
@@ -852,7 +810,7 @@ function bindPublicEvents() {
       });
       $("loginForm").classList.toggle("is-active", target === "login");
       $("signupForm").classList.toggle("is-active", target === "signup");
-      $("publicAuthCard").querySelector(".screen-title").textContent = target === "login" ? "登录" : "注册";
+      $("publicAuthCard").querySelector(".screen-title").textContent = target === "login" ? "\u767b\u5f55" : "\u6ce8\u518c";
       clearMessage("userAuthMessage");
     });
   });
@@ -875,7 +833,7 @@ function bindPublicEvents() {
       });
       state.user = state.dashboard.user;
       renderWorkspace();
-      showFlash("登录成功");
+      showFlash("\u767b\u5f55\u6210\u529f");
     } catch (error) {
       setMessage("userAuthMessage", error.message, true);
     }
@@ -890,7 +848,6 @@ function bindPublicEvents() {
         method: "POST",
         body: {
           workspace: String(formData.get("workspace") || ""),
-          providerKey: String(formData.get("provider") || "kiro"),
           email: String(formData.get("email") || ""),
           password: String(formData.get("password") || ""),
           plan: String(formData.get("plan") || "starter"),
@@ -900,7 +857,7 @@ function bindPublicEvents() {
       state.user = state.dashboard.user;
       renderWorkspace();
       event.currentTarget.reset();
-      showFlash("注册成功");
+      showFlash("\u6ce8\u518c\u6210\u529f");
     } catch (error) {
       setMessage("userAuthMessage", error.message, true);
     }
@@ -911,23 +868,7 @@ function bindPublicEvents() {
     state.user = null;
     state.dashboard = null;
     renderWorkspace();
-    showFlash("已退出");
-  });
-
-  $("rotateOwnKeyButton").addEventListener("click", async () => {
-    try {
-      state.dashboard = await api("/api/apikey/rotate", { method: "POST" });
-      state.user = state.dashboard.user;
-      renderWorkspace();
-      showFlash("API Key 已更新");
-    } catch (error) {
-      showFlash(error.message, "error");
-    }
-  });
-
-  $("openProviderEntryButton").addEventListener("click", () => {
-    const provider = state.dashboard && state.dashboard.user ? state.dashboard.user.entry : null;
-    openEntryUrl(providerTargetUrl(provider, "public"), provider && provider.embedMode ? provider.embedMode : "link");
+    showFlash("\u5df2\u9000\u51fa");
   });
 
   $("copyOwnKeyButton").addEventListener("click", () => copyText(state.dashboard && state.dashboard.user ? state.dashboard.user.apiKey : ""));
