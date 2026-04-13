@@ -130,12 +130,19 @@ function applyPlanDefaults(form, planKey) {
 }
 
 function updateSnippet() {
-  const apiKey = state.dashboard && state.dashboard.user
-    ? (state.dashboard.user.apiKey || "请在对应入口获取 API Key")
-    : "sk-your-key";
-  const baseUrl = state.dashboard && state.dashboard.user
-    ? state.dashboard.user.baseUrl
-    : ((state.config && state.config.apiBaseUrl) || "https://example.com/v1");
+  const currentUser = state.dashboard && state.dashboard.user ? state.dashboard.user : null;
+  if (currentUser && currentUser.providerKey !== "kiro") {
+    const entryUrl = providerTargetUrl(currentUser.entry, "public");
+    $("sdkSnippet").textContent = [
+      "This package is delivered through the external provider entry.",
+      entryUrl ? `Portal entry: ${entryUrl}` : "Portal entry: configure the external entry first.",
+      currentUser.baseUrl ? `Gateway base URL: ${currentUser.baseUrl}` : "Gateway base URL: obtain it from the external entry."
+    ].join("\n");
+    return;
+  }
+
+  const apiKey = currentUser ? (currentUser.apiKey || "请在对应入口获取 API Key") : "sk-your-key";
+  const baseUrl = currentUser ? currentUser.baseUrl : ((state.config && state.config.apiBaseUrl) || "https://example.com/v1");
   $("sdkSnippet").textContent = `from openai import OpenAI
 
 client = OpenAI(
@@ -208,7 +215,9 @@ function renderWorkspace() {
     ? `${state.dashboard.user.providerLabel || state.dashboard.user.providerKey || "-"}`
     : "-";
   $("workspaceApiKey").textContent = ready ? (state.dashboard.user.apiKey || "该套餐通过外部入口提供 Key") : "-";
-  $("workspaceBaseUrl").textContent = ready ? state.dashboard.user.baseUrl : ((state.config && state.config.apiBaseUrl) || "-");
+  $("workspaceBaseUrl").textContent = ready
+    ? (state.dashboard.user.baseUrl || "请在对应入口查看 Gateway Base URL")
+    : ((state.config && state.config.apiBaseUrl) || "-");
   $("metricRequests30d").textContent = formatNumber(state.dashboard && state.dashboard.metrics ? state.dashboard.metrics.requests30d : 0);
   $("metricTokens30d").textContent = formatNumber(state.dashboard && state.dashboard.metrics ? state.dashboard.metrics.tokens30d : 0);
   $("metricTodayRequests").textContent = formatNumber(state.dashboard && state.dashboard.metrics ? state.dashboard.metrics.todayRequests : 0);
@@ -223,6 +232,7 @@ function renderWorkspace() {
   $("rotateOwnKeyButton").classList.toggle("is-hidden", !ready || !isKiro);
   $("openProviderEntryButton").classList.toggle("is-hidden", !ready || isKiro);
   $("copyOwnKeyButton").classList.toggle("is-hidden", !ready || !isKiro);
+  $("copyBaseUrlButton").classList.toggle("is-hidden", !ready || !state.dashboard.user.baseUrl);
 }
 
 function renderOverview() {
@@ -285,6 +295,47 @@ function providerStatusMeta(provider) {
     return { label: "未配置", className: "status-pill is-pending" };
   }
   return { label: "离线", className: "status-pill is-offline" };
+}
+
+function providerSyncLabel(provider) {
+  if (!provider) return "unknown";
+  if (provider.syncMode === "remote_sync") return "remote sync";
+  if (provider.syncMode === "local_only") return "local only";
+  if (provider.syncMode === "native") return "native";
+  return provider.syncMode || "external";
+}
+
+function providerConfigSourceLabel(provider) {
+  return provider && provider.configSource === "environment" ? "env managed" : "db managed";
+}
+
+function providerDiagnosticsSummary(provider) {
+  const diagnostics = state.providerDiagnostics[provider.key];
+  if (!diagnostics) return "";
+  const checks = (diagnostics.checks || [])
+    .map((check) => `
+      <article class="diagnostic-item">
+        <strong>${escapeHtml(check.label || "-")}</strong>
+        <span>${check.ok === true ? "ok" : (check.ok === false ? "check" : "skip")}</span>
+        <p>${escapeHtml(check.detail || "")}</p>
+      </article>
+    `)
+    .join("");
+  const runtime = diagnostics.runtime || null;
+  const runtimeMeta = runtime ? `
+    <div class="diagnostic-meta">
+      <span>source: ${escapeHtml(runtime.sourceBundlePresent ? "present" : "missing")}</span>
+      <span>docker: ${escapeHtml(runtime.dockerAvailable ? "yes" : "no")}</span>
+      <span>go: ${escapeHtml(runtime.goAvailable ? "yes" : "no")}</span>
+      <span>tcp: ${escapeHtml(runtime.tcpProbe && runtime.tcpProbe.reachable === true ? "reachable" : (runtime.tcpProbe && runtime.tcpProbe.reachable === false ? "down" : "skipped"))}</span>
+    </div>
+  ` : "";
+  return `
+    <div class="diagnostic-shell">
+      ${runtimeMeta}
+      <div class="diagnostic-grid">${checks}</div>
+    </div>
+  `;
 }
 
 function entryCardTemplate(provider, audience = "public") {
@@ -383,6 +434,13 @@ function providerCardTemplate(provider) {
         </div>
         <span class="${status.className}">${escapeHtml(status.label)}</span>
       </div>
+      <div class="provider-badge-row">
+        <span class="mini-pill">${escapeHtml(providerSyncLabel(provider))}</span>
+        <span class="mini-pill">${escapeHtml(providerConfigSourceLabel(provider))}</span>
+      </div>
+      ${provider.managedFields && provider.managedFields.length ? `<p class="field-help">Locked by env: ${escapeHtml(provider.managedFields.join(", "))}</p>` : ""}
+      ${provider.syncMessage ? `<p class="field-help">${escapeHtml(provider.syncMessage)}</p>` : ""}
+      ${providerDiagnosticsSummary(provider)}
       <form data-provider-form="${escapeHtml(provider.key)}">
         <div class="form-grid">
           <label>
@@ -413,6 +471,10 @@ function providerCardTemplate(provider) {
             <span>管理 API Key</span>
             <input type="password" name="adminApiKey" value="" placeholder="${provider.hasAdminApiKey ? '已保存，留空表示不修改' : '粘贴 sub2api admin api key'}">
             <span class="field-help">${provider.hasAdminApiKey ? "已保存管理 API Key，留空不改。" : "未配置管理 API Key，无法自动同步创建 sub2api 用户。"}</span>
+          </label>
+          <label class="checkbox-field">
+            <input type="checkbox" name="clearAdminApiKey">
+            <span>清除已保存的管理 API Key</span>
           </label>
           <label>
             <span>API Base URL</span>
